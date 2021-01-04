@@ -1,5 +1,6 @@
 ﻿using APIClientTool.Utilities;
 using APIClientTool.ViewModels;
+using APIClientTool.ViewModels.BaseModels;
 using APIClientTool.ViewModels.Form941;
 using APIClientTool.ViewModels.Form941CoreModel;
 using Newtonsoft.Json;
@@ -184,42 +185,119 @@ namespace APIClientTool.Controllers
 
             // Generate JSON for Form 941
             var requestJson = JsonConvert.SerializeObject(form941ReturnList, Formatting.Indented);
-
-            using (var client = new PublicAPIClient())
+            string authType = Utility.GetAppSettings("AuthenticationType");
+            if (!string.IsNullOrWhiteSpace(authType) && authType.ToUpper()=="JWT")
             {
-                //API URL to Create Form 941 Return
-                string requestUri = "Form941/Create";
+                //Get URLs from App.Config
+                string oAuthApiUrl = Utility.GetAppSettings("OAuthApiUrl");
+                string apiUrl = Utility.GetAppSettings("PublicAPIUrlWithJWT");
 
-                //POST
-                APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, HttpMethod.Post.ToString());
-
-                //Get Response
-                var response = client.PostAsJsonAsync(requestUri, form941ReturnList).Result;
-                if (response != null && response.IsSuccessStatusCode)
+                //Call OAuth API 
+                using (var oAuthClient = new HttpClient())
                 {
-                    //Read Response
-                    var createResponse = response.Content.ReadAsAsync<Form941CreateReturnResponse>().Result;
-                    if (createResponse != null)
+                    string oAuthRequestUri = Utility.GetAppSettings("OAuthApiMethodRoute");
+                    oAuthClient.BaseAddress = new Uri(oAuthApiUrl);
+
+                    //Generate JWS and get access token (JWT)
+                    OAuthGenerator.GenerateJWSAndGetAccessToken(oAuthClient);
+
+                    //Read OAuth API response
+                    var response = oAuthClient.GetAsync(oAuthRequestUri).Result;
+                    if (response != null && response.IsSuccessStatusCode)
                     {
-                        responseJson = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                        //Deserializing JSON (Success Response) to Form941CreateReturnResponse object
-                        form941Response = new JavaScriptSerializer().Deserialize<Form941CreateReturnResponse>(responseJson);
-                        if (form941Response.SubmissionId != null && form941Response.SubmissionId != Guid.Empty)
+                        var oauthApiResponse = response.Content.ReadAsAsync<AccessTokenResponse>().Result;
+                        if (oauthApiResponse != null && oauthApiResponse.StatusCode == 200)
                         {
-                            //Adding Form941CreateReturnResponse Response to Session
-                            APISession.AddForm941APIResponse(form941Response);
+                            //Get Access token from OAuth API response
+                            string accessToken = oauthApiResponse.AccessToken;
+                            //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+
+                            if (!string.IsNullOrWhiteSpace(accessToken))
+                            {
+                                //Call TaxBandits API using the Access token
+                                //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+                                using (var apiClient = new HttpClient())
+                                {
+                                    //API URL to Create Form 941 Return
+                                    string requestUri = "Form941/Create";
+
+                                    apiClient.BaseAddress = new Uri(apiUrl);
+
+                                    //Construct HTTP headers
+                                    //If Access token got expired, call OAuth API again & get new Access token.
+                                    OAuthGenerator.ConstructHeadersWithAccessToken(apiClient, accessToken);
+
+                                    //Get Response
+                                    var apiResponse = apiClient.PostAsJsonAsync(requestUri, form941ReturnList).Result;
+                                    if (apiResponse != null && response.IsSuccessStatusCode)
+                                    {
+                                        //Read Response
+                                        var createResponse = apiResponse.Content.ReadAsAsync<Form941CreateReturnResponse>().Result;
+                                        if (createResponse != null)
+                                        {
+                                            responseJson = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                            //Deserializing JSON (Success Response) to Form941CreateReturnResponse object
+                                            form941Response = new JavaScriptSerializer().Deserialize<Form941CreateReturnResponse>(responseJson);
+                                            if (form941Response.SubmissionId != null && form941Response.SubmissionId != Guid.Empty)
+                                            {
+                                                //Adding Form941CreateReturnResponse Response to Session
+                                                APISession.AddForm941APIResponse(form941Response);
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var createResponse = apiResponse.Content.ReadAsAsync<Object>().Result;
+                                        responseJson = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+
+                                        //Deserializing JSON (Error Response) to Form941CreateReturnResponse object
+                                        form941Response = new JavaScriptSerializer().Deserialize<Form941CreateReturnResponse>(responseJson);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                else
+            }
+            else
+            {
+                using (var client = new PublicAPIClient())
                 {
-                    var createResponse = response.Content.ReadAsAsync<Object>().Result;
-                    responseJson = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                    //API URL to Create Form 941 Return
+                    string requestUri = "Form941/Create";
 
-                    //Deserializing JSON (Error Response) to Form941CreateReturnResponse object
-                    form941Response = new JavaScriptSerializer().Deserialize<Form941CreateReturnResponse>(responseJson);
+                    //POST
+                    APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, HttpMethod.Post.ToString());
+
+                    //Get Response
+                    var response = client.PostAsJsonAsync(requestUri, form941ReturnList).Result;
+                    if (response != null && response.IsSuccessStatusCode)
+                    {
+                        //Read Response
+                        var createResponse = response.Content.ReadAsAsync<Form941CreateReturnResponse>().Result;
+                        if (createResponse != null)
+                        {
+                            responseJson = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                            //Deserializing JSON (Success Response) to Form941CreateReturnResponse object
+                            form941Response = new JavaScriptSerializer().Deserialize<Form941CreateReturnResponse>(responseJson);
+                            if (form941Response.SubmissionId != null && form941Response.SubmissionId != Guid.Empty)
+                            {
+                                //Adding Form941CreateReturnResponse Response to Session
+                                APISession.AddForm941APIResponse(form941Response);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var createResponse = response.Content.ReadAsAsync<Object>().Result;
+                        responseJson = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+
+                        //Deserializing JSON (Error Response) to Form941CreateReturnResponse object
+                        form941Response = new JavaScriptSerializer().Deserialize<Form941CreateReturnResponse>(responseJson);
+                    }
                 }
             }
+          
             return PartialView(form941Response);
         }
         #endregion
@@ -245,36 +323,110 @@ namespace APIClientTool.Controllers
 
                 if (transmitForm941 != null)
                 {
-                    using (var client = new PublicAPIClient())
+
+                    string authType = Utility.GetAppSettings("AuthenticationType");
+                    if (!string.IsNullOrWhiteSpace(authType) && authType.ToUpper() == "JWT")
                     {
-                        //API URL to Transmit Form 941 Return
-                        string requestUri = "Form941/Transmit";
+                        //Get URLs from App.Config
+                        string oAuthApiUrl = Utility.GetAppSettings("OAuthApiUrl");
+                        string apiUrl = Utility.GetAppSettings("PublicAPIUrlWithJWT");
 
-                        //POST
-                        APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "POST");
-
-                        //Get Response
-                        var _response = client.PostAsJsonAsync(requestUri, transmitForm941).Result;
-                        if (_response != null && _response.IsSuccessStatusCode)
+                        //Call OAuth API 
+                        using (var oAuthClient = new HttpClient())
                         {
-                            //Read Response
-                            var createResponse = _response.Content.ReadAsAsync<TransmitForm941Response>().Result;
-                            if (createResponse != null)
+                            string oAuthRequestUri = Utility.GetAppSettings("OAuthApiMethodRoute");
+                            oAuthClient.BaseAddress = new Uri(oAuthApiUrl);
+
+                            //Generate JWS and get access token (JWT)
+                            OAuthGenerator.GenerateJWSAndGetAccessToken(oAuthClient);
+
+                            //Read OAuth API response
+                            var response = oAuthClient.GetAsync(oAuthRequestUri).Result;
+                            if (response != null && response.IsSuccessStatusCode)
                             {
-                                transmitForm941ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                                transmitForm941Response = new JavaScriptSerializer().Deserialize<TransmitForm941Response>(transmitForm941ResponseJSON);
-                                if (transmitForm941Response.SubmissionId != null && transmitForm941Response.SubmissionId != Guid.Empty && transmitForm941Response.StatusCode == (int)StatusCode.Success)
+                                var oauthApiResponse = response.Content.ReadAsAsync<AccessTokenResponse>().Result;
+                                if (oauthApiResponse != null && oauthApiResponse.StatusCode == 200)
                                 {
-                                    //Updating Filing Status (Transmitted) for a specific SubmissionId in Session 
-                                    APISession.UpdateForm941ReturnFilingStatus(transmitForm941Response.SubmissionId);
+                                    //Get Access token from OAuth API response
+                                    string accessToken = oauthApiResponse.AccessToken;
+                                    //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+
+                                    if (!string.IsNullOrWhiteSpace(accessToken))
+                                    {
+                                        //Call TaxBandits API using the Access token
+                                        //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+                                        using (var apiClient = new HttpClient())
+                                        {
+                                            //API URL to Transmit Form 941 Return
+                                            string requestUri = "Form941/Transmit";
+
+                                            apiClient.BaseAddress = new Uri(apiUrl);
+                                            //Construct HTTP headers
+                                            //If Access token got expired, call OAuth API again & get new Access token.
+                                            OAuthGenerator.ConstructHeadersWithAccessToken(apiClient, accessToken);
+
+                                            //Get Response
+                                            var _response = apiClient.PostAsJsonAsync(requestUri, transmitForm941).Result;
+                                            if (_response != null && _response.IsSuccessStatusCode)
+                                            {
+                                                //Read Response
+                                                var createResponse = _response.Content.ReadAsAsync<TransmitForm941Response>().Result;
+                                                if (createResponse != null)
+                                                {
+                                                    transmitForm941ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                    transmitForm941Response = new JavaScriptSerializer().Deserialize<TransmitForm941Response>(transmitForm941ResponseJSON);
+                                                    if (transmitForm941Response.SubmissionId != null && transmitForm941Response.SubmissionId != Guid.Empty && transmitForm941Response.StatusCode == (int)StatusCode.Success)
+                                                    {
+                                                        //Updating Filing Status (Transmitted) for a specific SubmissionId in Session 
+                                                        APISession.UpdateForm941ReturnFilingStatus(transmitForm941Response.SubmissionId);
+                                                    }
+                                                }
+                                            }
+                                            else
+                                            {
+                                                var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                                                transmitForm941ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                transmitForm941Response = new JavaScriptSerializer().Deserialize<TransmitForm941Response>(transmitForm941ResponseJSON);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                        else
+                    }
+                    else
+                    {
+                        using (var client = new PublicAPIClient())
                         {
-                            var createResponse = _response.Content.ReadAsAsync<Object>().Result;
-                            transmitForm941ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                            transmitForm941Response = new JavaScriptSerializer().Deserialize<TransmitForm941Response>(transmitForm941ResponseJSON);
+                            //API URL to Transmit Form 941 Return
+                            string requestUri = "Form941/Transmit";
+
+                            //POST
+                            APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "POST");
+
+                            //Get Response
+                            var _response = client.PostAsJsonAsync(requestUri, transmitForm941).Result;
+                            if (_response != null && _response.IsSuccessStatusCode)
+                            {
+                                //Read Response
+                                var createResponse = _response.Content.ReadAsAsync<TransmitForm941Response>().Result;
+                                if (createResponse != null)
+                                {
+                                    transmitForm941ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                    transmitForm941Response = new JavaScriptSerializer().Deserialize<TransmitForm941Response>(transmitForm941ResponseJSON);
+                                    if (transmitForm941Response.SubmissionId != null && transmitForm941Response.SubmissionId != Guid.Empty && transmitForm941Response.StatusCode == (int)StatusCode.Success)
+                                    {
+                                        //Updating Filing Status (Transmitted) for a specific SubmissionId in Session 
+                                        APISession.UpdateForm941ReturnFilingStatus(transmitForm941Response.SubmissionId);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                                transmitForm941ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                transmitForm941Response = new JavaScriptSerializer().Deserialize<TransmitForm941Response>(transmitForm941ResponseJSON);
+                            }
                         }
                     }
                 }
@@ -307,30 +459,98 @@ namespace APIClientTool.Controllers
 
                 if (submissionId != null && submissionId != Guid.Empty)
                 {
-                    using (var client = new PublicAPIClient())
+
+                    string authType = Utility.GetAppSettings("AuthenticationType");
+                    if (!string.IsNullOrWhiteSpace(authType) && authType.ToUpper() == "JWT")
                     {
-                        //POST
-                        string requestUri = "Form941/Status";
+                        //Get URLs from App.Config
+                        string oAuthApiUrl = Utility.GetAppSettings("OAuthApiUrl");
+                        string apiUrl = Utility.GetAppSettings("PublicAPIUrlWithJWT");
 
-                        //Get Response
-                        APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "POST");
-
-                        //Read Response
-                        var _response = client.PostAsJsonAsync(requestUri, efileRequest).Result;
-                        if (_response != null && _response.IsSuccessStatusCode)
+                        //Call OAuth API 
+                        using (var oAuthClient = new HttpClient())
                         {
-                            var createResponse = _response.Content.ReadAsAsync<Form941StatusResponse>().Result;
-                            if (createResponse != null)
+                            string oAuthRequestUri = Utility.GetAppSettings("OAuthApiMethodRoute");
+                            oAuthClient.BaseAddress = new Uri(oAuthApiUrl);
+
+                            //Generate JWS and get access token (JWT)
+                            OAuthGenerator.GenerateJWSAndGetAccessToken(oAuthClient);
+
+                            //Read OAuth API response
+                            var response = oAuthClient.GetAsync(oAuthRequestUri).Result;
+                            if (response != null && response.IsSuccessStatusCode)
                             {
+                                var oauthApiResponse = response.Content.ReadAsAsync<AccessTokenResponse>().Result;
+                                if (oauthApiResponse != null && oauthApiResponse.StatusCode == 200)
+                                {
+                                    //Get Access token from OAuth API response
+                                    string accessToken = oauthApiResponse.AccessToken;
+                                    //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+
+                                    if (!string.IsNullOrWhiteSpace(accessToken))
+                                    {
+                                        //Call TaxBandits API using the Access token
+                                        //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+                                        using (var apiClient = new HttpClient())
+                                        {
+                                            //POST
+                                            string requestUri = "Form941/Status";
+
+                                            apiClient.BaseAddress = new Uri(apiUrl);
+                                            //Construct HTTP headers
+                                            //If Access token got expired, call OAuth API again & get new Access token.
+                                            OAuthGenerator.ConstructHeadersWithAccessToken(apiClient, accessToken);
+
+                                            //Read Response
+                                            var _response = apiClient.PostAsJsonAsync(requestUri, efileRequest).Result;
+                                            if (_response != null && _response.IsSuccessStatusCode)
+                                            {
+                                                var createResponse = _response.Content.ReadAsAsync<Form941StatusResponse>().Result;
+                                                if (createResponse != null)
+                                                {
+                                                    transmitFormW2ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                    efileStatusResponse = new JavaScriptSerializer().Deserialize<Form941StatusResponse>(transmitFormW2ResponseJSON);
+                                                }
+                                            }
+                                            else
+                                            {
+                                                var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                                                transmitFormW2ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                efileStatusResponse = new JavaScriptSerializer().Deserialize<Form941StatusResponse>(transmitFormW2ResponseJSON);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        using (var client = new PublicAPIClient())
+                        {
+                            //POST
+                            string requestUri = "Form941/Status";
+
+                            //Get Response
+                            APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "POST");
+
+                            //Read Response
+                            var _response = client.PostAsJsonAsync(requestUri, efileRequest).Result;
+                            if (_response != null && _response.IsSuccessStatusCode)
+                            {
+                                var createResponse = _response.Content.ReadAsAsync<Form941StatusResponse>().Result;
+                                if (createResponse != null)
+                                {
+                                    transmitFormW2ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                    efileStatusResponse = new JavaScriptSerializer().Deserialize<Form941StatusResponse>(transmitFormW2ResponseJSON);
+                                }
+                            }
+                            else
+                            {
+                                var createResponse = _response.Content.ReadAsAsync<Object>().Result;
                                 transmitFormW2ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
                                 efileStatusResponse = new JavaScriptSerializer().Deserialize<Form941StatusResponse>(transmitFormW2ResponseJSON);
                             }
-                        }
-                        else
-                        {
-                            var createResponse = _response.Content.ReadAsAsync<Object>().Result;
-                            transmitFormW2ResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                            efileStatusResponse = new JavaScriptSerializer().Deserialize<Form941StatusResponse>(transmitFormW2ResponseJSON);
                         }
                     }
                 }
@@ -385,38 +605,117 @@ namespace APIClientTool.Controllers
             var getReturnResponseJSON = string.Empty;
             if (submissionId != null && submissionId != Guid.Empty)
             {
-                using (var client = new PublicAPIClient())
+
+                string authType = Utility.GetAppSettings("AuthenticationType");
+                if (!string.IsNullOrWhiteSpace(authType) && authType.ToUpper() == "JWT")
                 {
-                    //API URL to Get Form 941 Return
-                    string requestUri = "Form941/Get?submissionId=" + submissionId;
+                    //Get URLs from App.Config
+                    string oAuthApiUrl = Utility.GetAppSettings("OAuthApiUrl");
+                    string apiUrl = Utility.GetAppSettings("PublicAPIUrlWithJWT");
 
-                    //Get
-                    APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "GET");
-
-                    //Get Response
-                    var _response = client.GetAsync(requestUri).Result;
-                    if (_response != null && _response.IsSuccessStatusCode)
+                    //Call OAuth API 
+                    using (var oAuthClient = new HttpClient())
                     {
-                        //Read Response
-                        var createResponse = _response.Content.ReadAsAsync<Form941GetReturnResponse>().Result;
-                        if (createResponse != null)
+                        string oAuthRequestUri = Utility.GetAppSettings("OAuthApiMethodRoute");
+                        oAuthClient.BaseAddress = new Uri(oAuthApiUrl);
+
+                        //Generate JWS and get access token (JWT)
+                        OAuthGenerator.GenerateJWSAndGetAccessToken(oAuthClient);
+
+                        //Read OAuth API response
+                        var response = oAuthClient.GetAsync(oAuthRequestUri).Result;
+                        if (response != null && response.IsSuccessStatusCode)
                         {
-                            getReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                            getReturnResponse = new JavaScriptSerializer().Deserialize<Form941GetReturnResponse>(getReturnResponseJSON);
-                            if (getReturnResponse != null && getReturnResponse.StatusCode == (int)StatusCode.Success)
+                            var oauthApiResponse = response.Content.ReadAsAsync<AccessTokenResponse>().Result;
+                            if (oauthApiResponse != null && oauthApiResponse.StatusCode == 200)
                             {
-                                ViewData["GetResponseJSON"] = getReturnResponseJSON;
-                                return PartialView();
+                                //Get Access token from OAuth API response
+                                string accessToken = oauthApiResponse.AccessToken;
+                                //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+
+                                if (!string.IsNullOrWhiteSpace(accessToken))
+                                {
+                                    //Call TaxBandits API using the Access token
+                                    //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+                                    using (var apiClient = new HttpClient())
+                                    {
+                                        //API URL to Get Form 941 Return
+                                        string requestUri = "Form941/Get?submissionId=" + submissionId;
+
+                                        apiClient.BaseAddress = new Uri(apiUrl);
+                                        //Construct HTTP headers
+                                        //If Access token got expired, call OAuth API again & get new Access token.
+                                        OAuthGenerator.ConstructHeadersWithAccessToken(apiClient, accessToken);
+
+                                        //Get Response
+                                        var _response = apiClient.GetAsync(requestUri).Result;
+                                        if (_response != null && _response.IsSuccessStatusCode)
+                                        {
+                                            //Read Response
+                                            var createResponse = _response.Content.ReadAsAsync<Form941GetReturnResponse>().Result;
+                                            if (createResponse != null)
+                                            {
+                                                getReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                getReturnResponse = new JavaScriptSerializer().Deserialize<Form941GetReturnResponse>(getReturnResponseJSON);
+                                                if (getReturnResponse != null && getReturnResponse.StatusCode == (int)StatusCode.Success)
+                                                {
+                                                    ViewData["GetResponseJSON"] = getReturnResponseJSON;
+                                                    return PartialView();
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                                            getReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                            getReturnResponse = new JavaScriptSerializer().Deserialize<Form941GetReturnResponse>(getReturnResponseJSON);
+                                        }
+
+                                    }
+                                }
                             }
                         }
                     }
-                    else
+                }
+                else
+                {
+                    using (var client = new PublicAPIClient())
                     {
-                        var createResponse = _response.Content.ReadAsAsync<Object>().Result;
-                        getReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                        getReturnResponse = new JavaScriptSerializer().Deserialize<Form941GetReturnResponse>(getReturnResponseJSON);
+                        //API URL to Get Form 941 Return
+                        string requestUri = "Form941/Get?submissionId=" + submissionId;
+
+                        //Get
+                        APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "GET");
+
+                        //Get Response
+                        var _response = client.GetAsync(requestUri).Result;
+                        if (_response != null && _response.IsSuccessStatusCode)
+                        {
+                            //Read Response
+                            var createResponse = _response.Content.ReadAsAsync<Form941GetReturnResponse>().Result;
+                            if (createResponse != null)
+                            {
+                                getReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                getReturnResponse = new JavaScriptSerializer().Deserialize<Form941GetReturnResponse>(getReturnResponseJSON);
+                                if (getReturnResponse != null && getReturnResponse.StatusCode == (int)StatusCode.Success)
+                                {
+                                    ViewData["GetResponseJSON"] = getReturnResponseJSON;
+                                    return PartialView();
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                            getReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                            getReturnResponse = new JavaScriptSerializer().Deserialize<Form941GetReturnResponse>(getReturnResponseJSON);
+                        }
                     }
                 }
+
+
+
+                
             }
             return PartialView(getReturnResponse);
         }
@@ -441,36 +740,110 @@ namespace APIClientTool.Controllers
                 deleteReturnRequest.RecordIds = recordIdsFromSession != null ? recordIdsFromSession.RecordIds : null;
                 if (deleteReturnRequest.RecordIds != null && deleteReturnRequest.RecordIds.Count > 0)
                 {
-                    using (var client = new PublicAPIClient())
+                    string authType = Utility.GetAppSettings("AuthenticationType");
+                    if (!string.IsNullOrWhiteSpace(authType) && authType.ToUpper() == "JWT")
                     {
-                        //API URL to Transmit Form 941 Return
-                        string requestUri = "Form941/Delete";
+                        //Get URLs from App.Config
+                        string oAuthApiUrl = Utility.GetAppSettings("OAuthApiUrl");
+                        string apiUrl = Utility.GetAppSettings("PublicAPIUrlWithJWT");
 
-                        //POST
-                        APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "POST");
-
-                        //Get Response
-                        var _response = client.PostAsJsonAsync(requestUri, deleteReturnRequest).Result;
-                        if (_response != null && _response.IsSuccessStatusCode)
+                        //Call OAuth API 
+                        using (var oAuthClient = new HttpClient())
                         {
-                            //Read Response
-                            var createResponse = _response.Content.ReadAsAsync<DeleteReturnResponse>().Result;
-                            if (createResponse != null)
+                            string oAuthRequestUri = Utility.GetAppSettings("OAuthApiMethodRoute");
+                            oAuthClient.BaseAddress = new Uri(oAuthApiUrl);
+
+                            //Generate JWS and get access token (JWT)
+                            OAuthGenerator.GenerateJWSAndGetAccessToken(oAuthClient);
+
+                            //Read OAuth API response
+                            var response = oAuthClient.GetAsync(oAuthRequestUri).Result;
+                            if (response != null && response.IsSuccessStatusCode)
                             {
-                                deleteReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                                deleteReturnResponse = new JavaScriptSerializer().Deserialize<DeleteReturnResponse>(deleteReturnResponseJSON);
-                                if (deleteReturnResponse != null && deleteReturnResponse.StatusCode == (int)StatusCode.Success)
+                                var oauthApiResponse = response.Content.ReadAsAsync<AccessTokenResponse>().Result;
+                                if (oauthApiResponse != null && oauthApiResponse.StatusCode == 200)
                                 {
-                                    //Remove Submission and RecordId from session
-                                    APISession.DeleteForm941APIResponse(submissionId);
+                                    //Get Access token from OAuth API response
+                                    string accessToken = oauthApiResponse.AccessToken;
+                                    //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+
+                                    if (!string.IsNullOrWhiteSpace(accessToken))
+                                    {
+                                        //Call TaxBandits API using the Access token
+                                        //Access token is valid for one hour. After that call OAuth API again & get new Access token.
+                                        using (var apiClient = new HttpClient())
+                                        {
+                                            //API URL to Transmit Form 941 Return
+                                            string requestUri = "Form941/Delete";
+
+                                            apiClient.BaseAddress = new Uri(apiUrl);
+                                            //Construct HTTP headers
+                                            //If Access token got expired, call OAuth API again & get new Access token.
+                                            OAuthGenerator.ConstructHeadersWithAccessToken(apiClient, accessToken);
+
+                                            //Get Response
+                                            var _response = apiClient.PostAsJsonAsync(requestUri, deleteReturnRequest).Result;
+                                            if (_response != null && _response.IsSuccessStatusCode)
+                                            {
+                                                //Read Response
+                                                var createResponse = _response.Content.ReadAsAsync<DeleteReturnResponse>().Result;
+                                                if (createResponse != null)
+                                                {
+                                                    deleteReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                    deleteReturnResponse = new JavaScriptSerializer().Deserialize<DeleteReturnResponse>(deleteReturnResponseJSON);
+                                                    if (deleteReturnResponse != null && deleteReturnResponse.StatusCode == (int)StatusCode.Success)
+                                                    {
+                                                        //Remove Submission and RecordId from session
+                                                        APISession.DeleteForm941APIResponse(submissionId);
+                                                    }
+                                                }
+                                            }
+                                            else
+                                            {
+                                                var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                                                deleteReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                                deleteReturnResponse = new JavaScriptSerializer().Deserialize<DeleteReturnResponse>(deleteReturnResponseJSON);
+                                            }
+
+                                        }
+                                    }
                                 }
                             }
                         }
-                        else
+                    }
+                    else
+                    {
+                        using (var client = new PublicAPIClient())
                         {
-                            var createResponse = _response.Content.ReadAsAsync<Object>().Result;
-                            deleteReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
-                            deleteReturnResponse = new JavaScriptSerializer().Deserialize<DeleteReturnResponse>(deleteReturnResponseJSON);
+                            //API URL to Transmit Form 941 Return
+                            string requestUri = "Form941/Delete";
+
+                            //POST
+                            APIGenerateAuthHeader.GenerateAuthHeader(client, requestUri, "POST");
+
+                            //Get Response
+                            var _response = client.PostAsJsonAsync(requestUri, deleteReturnRequest).Result;
+                            if (_response != null && _response.IsSuccessStatusCode)
+                            {
+                                //Read Response
+                                var createResponse = _response.Content.ReadAsAsync<DeleteReturnResponse>().Result;
+                                if (createResponse != null)
+                                {
+                                    deleteReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                    deleteReturnResponse = new JavaScriptSerializer().Deserialize<DeleteReturnResponse>(deleteReturnResponseJSON);
+                                    if (deleteReturnResponse != null && deleteReturnResponse.StatusCode == (int)StatusCode.Success)
+                                    {
+                                        //Remove Submission and RecordId from session
+                                        APISession.DeleteForm941APIResponse(submissionId);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                var createResponse = _response.Content.ReadAsAsync<Object>().Result;
+                                deleteReturnResponseJSON = JsonConvert.SerializeObject(createResponse, Formatting.Indented);
+                                deleteReturnResponse = new JavaScriptSerializer().Deserialize<DeleteReturnResponse>(deleteReturnResponseJSON);
+                            }
                         }
                     }
                 }
