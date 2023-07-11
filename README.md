@@ -21,6 +21,6 @@ With a simple click, you can ensure your W-2/1099 & Employment Taxes Forms are s
 
 # Developer Terms
 
-You agree to comply with all applicable laws and regulations and also agree to our Terms http://www.expresstaxzone.com/terms-of-use
+You agree to comply with all applicable laws and regulations and also agree to our Terms https://www.taxbandits.com/terms
 
 By using the TaxBandits SDK you agree to these terms.
